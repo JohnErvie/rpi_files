@@ -1,0 +1,337 @@
+from PyQt5.QtWidgets import * 
+from PyQt5.QtGui import * 
+from PyQt5.QtCore import * 
+import sys
+import os
+import serial
+
+import random
+from datetime import * # this library is for the current time
+import pymysql
+import time
+import socket
+import qrcode
+
+def get_ip_address():
+    ip_address = ''
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8",80))
+    ip_address = s.getsockname()[0]
+    s.close()
+    return ip_address
+ip_address = get_ip_address()
+
+qr = qrcode.QRCode(
+    version=1,
+    error_correction=qrcode.constants.ERROR_CORRECT_L,
+    box_size=10,
+    border=2,
+    )
+qr.add_data(ip_address)
+qr.make(fit=True)
+
+image = qr.make_image(fill_color="black", back_color="white")
+
+#img = qrcode.make(ip_address)
+image.save("ip_add.png")
+
+import pickle # This library is for saving or load the model into a file
+
+with open(r"roomData", "rb") as input_file: # defining a input_file variable as the filename of the current model with a read parameter
+    model = pickle.load(input_file) # loading the model and define as model variable
+
+#database connection
+connection = pymysql.connect(host="localhost", user="pduser", passwd="password", database="pd_database")
+connection.autocommit = True
+cursor = connection.cursor()
+
+# check ip address if exist
+searchIp = "SELECT ip_address FROM raspberrypi WHERE ip_address = '{}';".format(ip_address)
+cursor.execute(searchIp)
+ipRow = cursor.fetchone()
+
+print(ipRow)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+  
+        # setting title
+        self.setWindowTitle("Group 20")
+  
+        # setting geometry
+        self.resize(600, 400)
+
+        # check ip address if exist
+        if (ipRow == None):
+            #password = input("Enter the password: ")
+            self.ipCheck()
+        
+        # getting RPI info from database
+        # RPI Info
+        searcQuery = "SELECT * FROM raspberrypi WHERE ip_address LIKE '{}';".format(ip_address)
+        cursor.execute(searcQuery)
+        self.RPIrecords = cursor.fetchone()
+        self.saveRpiRecords = self.RPIrecords
+        print(self.RPIrecords)
+
+
+        self.firstVal = 0
+        
+        # for collecting data
+        self.port="ttyUSB0"
+        self.ser = serial.Serial('/dev/'+self.port, 115200, timeout=0.25)
+        self.ser.reset_input_buffer()
+  
+        # calling method
+        self.UiComponents()
+        self.Timer()
+
+        self.center()
+
+        # opening window in maximized size
+        self.showMaximized()
+  
+        # showing all the widgets
+        self.show()
+
+    #move window to center
+    def center(self):
+        # geometry of the main window
+        qr = self.frameGeometry()
+
+        # center point of screen
+        cp = QDesktopWidget().availableGeometry().center()
+
+        # move rectangle's center point to screen's center point
+        qr.moveCenter(cp)
+
+        # top left of rectangle becomes top left of window centering it
+        self.move(qr.topLeft())
+  
+    # method for widgets
+    def UiComponents(self):
+        # creating label
+        self.img_QR = QLabel(self)
+
+        self.pixmap = QPixmap(r"ip_add.png")
+        self.img_QR.setPixmap(self.pixmap)
+        print(self.pixmap.width(),self.pixmap.height())
+        self.img_QR.setGeometry(20,20,self.pixmap.width(),self.pixmap.height())
+        
+        self.ipLabel = QLabel(self)
+        self.ipLabel.setText("IP Address: " + ip_address)
+        self.ipLabel.setAlignment(Qt.AlignCenter)
+        self.ipLabel.setGeometry(20, 20 + self.pixmap.height(), self.pixmap.width(), 40)
+        #self.ipLabel.setStyleSheet("border : 5px solid black")
+
+        self.passwordLabel = QLabel(self)
+        self.passwordLabel.setText("Password: " + self.RPIrecords[2])
+        self.passwordLabel.setAlignment(Qt.AlignCenter)
+        self.passwordLabel.setGeometry(20, 20 + self.pixmap.height() + 40, self.pixmap.width(), 40)
+
+        self.button = QPushButton("Stop", self)
+        self.button.setGeometry(20+80, 20 + self.pixmap.height() + 40 + 40, 60, 40)
+        self.button.clicked.connect(self.stopStartFuction)
+        
+        #self.powerLabel = QLabel(self)
+        #self.powerLabel.setAlignment(Qt.AlignCenter)
+        #self.powerLabel.setGeometry(20, 20 + self.pixmap.height() + 40 + 80, self.pixmap.width(), 40)
+
+    def ipCheck(self):
+        self.passwordLE = QLineEdit(self)
+        self.passwordLE.move(130, 22)
+
+        text, ok = QInputDialog.getText(self, 'Password', 'Enter the password')
+        if ok:
+            self.password = str(text)
+            
+            insertRPI = "INSERT INTO raspberrypi (ip_address, status, password) SELECT * FROM (SELECT '{}' as ip_address, '{}' as status, '{}' as password, '{}' as sensor1, '{}' as sensor2, '{}' as sensor3, '{}' as sensor4) as tmp WHERE NOT EXISTS (SELECT ip_address FROM raspberrypi WHERE ip_address = '{}') LIMIT 1;".format(ip_address, "not_connected", self.password, "Sensor 1", "Sensor 2", "Sensor 3", "Sensor 4", ip_address)
+            cursor.execute(insertRPI)
+            connection.commit()
+            
+            self.passwordLE.setText(str(text))
+
+    def sensorNameCheck(self):
+        searcQuery = "SELECT * FROM raspberrypi WHERE ip_address LIKE '{}';".format(ip_address)
+        cursor.execute(searcQuery)
+        self.newRpiRecords = cursor.fetchone()
+
+        for i in range(4, 8):
+            if(self.newRpiRecords[i] != self.saveRpiRecords[i]):
+                # modify the sensor name from pc_table database
+                modify = "UPDATE pc_table SET sname = '{}' WHERE sname LIKE '{}';".format(self.newRpiRecords[i], self.saveRpiRecords[i])
+                cursor.execute(modify)
+                
+                newSearcQuery = "SELECT * FROM raspberrypi WHERE ip_address LIKE '{}';".format(ip_address)
+                cursor.execute(newSearcQuery)
+                self.saveRpiRecords = cursor.fetchone()
+                
+            else:    
+                AlwaysModify = "UPDATE pc_table SET sname = '{}' WHERE sensor = 'Sensor {}';".format(self.saveRpiRecords[i], i-3)
+                cursor.execute(AlwaysModify)
+
+    def checkData(self):
+        self.sensorsCount = []
+        for i in range(1,5):
+            countQuery = "SELECT COUNT(sensor) FROM pc_data WHERE sensor LIKE 'Sensor {}';".format(i)
+            cursor.execute(countQuery)
+            counts = cursor.fetchone()
+
+            self.sensorsCount.append(int(counts[0]))
+
+        
+
+    def Timer(self):
+        self.start = True
+
+        # creating a timer object
+        self.timer = QTimer(self)
+
+        # adding action to timer
+        self.timer.timeout.connect(self.mainFunction)
+
+        # update the timer every second
+        self.timer.start(0)
+
+    def mainFunction(self):
+        if self.start:
+            self.sensorNameCheck() # always check if the sensor names are changed or modified
+
+
+            dateToday = datetime.now() # getting the current and declare as datetime variable
+            dateNow = date.today() # today's date
+            TimeNow = (datetime.time(datetime.now())) # current time
+
+            if self.ser.in_waiting > 0:
+                line = self.ser.readline().decode('utf-8').rstrip()
+                split = line.split(",")
+                
+                while("" in split) :
+                        split.remove("")
+                
+                #print(len(split))
+                data = []
+                
+                if len(split) > 1 and len(split) <= 13:
+                        splitLen = int(len(split))
+                        
+                        
+                        data.append([])
+                        
+                        for i in range(splitLen):
+                                data[0].append(split[i])        
+                        
+                elif len(split) > 13 and len(split) <= (13*2):
+                        splitLen = int(len(split)/2)
+                        
+                        data.append([])
+
+                        
+                        for i in range(splitLen):
+                                data[0].append(split[i])
+                                
+                                
+                        data.append([])
+                        for j in range(splitLen, splitLen*2):
+                                data[1].append(split[j])
+
+                                
+                elif len(split) > (13*2) and len(split) <= (13*3):
+                        splitLen = int(len(split)/3)
+                        
+                        data.append([])
+                        
+                        for k in range(int(splitLen)):
+                                data[0].append(split[k])
+                                
+                        data.append([])
+                        for l in range(int(splitLen), int(splitLen*2)):
+                                data[1].append(split[l])
+                            
+                        data.append([])
+                        for m in range(int(splitLen*2), int(splitLen*3)):
+                                data[2].append(split[m])
+                                
+                elif len(split) > (13*3) and len(split) <= (13*4):
+                        splitLen = int(len(split)/4)
+                        
+                        data.append([])
+                        
+                        for k in range(int(splitLen)):
+                                data[0].append(split[k])
+                                
+                        data.append([])
+                        for l in range(int(splitLen), int(splitLen*2)):
+                                data[1].append(split[l])
+                            
+                        data.append([])
+                        for m in range(int(splitLen*2), int(splitLen*3)):
+                                data[2].append(split[m])
+                                
+                        data.append([])
+                        for n in range(int(splitLen*3), int(splitLen*4)):
+                                data[3].append(split[n])        
+                        
+                
+                #self.powerLabel.setText("Power: " + str(self.power1))
+                
+                if (self.firstVal == 1):
+                  for i in range(len(data)): 
+                      if (data[i][2] != ' NAN'):
+                          ######
+                          power = (float(data[i][2]) * float(data[i][4]))
+                          power = "{:.1f}".format(power)
+                
+                          #insertData = "INSERT INTO data(sensor,datetime, voltage, current, power, energy, frequency, pf) VALUES('{}','{}', {},{},{},{},{},{})".format(data[i][0], dateToday, float(data[i][2]),float(data[i][4]), float(power), float(data[i][8]), float(data[i][10]), float(data[i][12]))
+                          #cursor.execute(insertData)
+                          #connection.commit()
+                          
+                          #power = float(data[i][6])
+              
+                          # using now the model 
+                          Voltage_score = model.decision_function([[float(power)]]) # Computing the Average anomaly score of PC variable of the base classifiers
+
+                          Voltage_anomaly_score = model.predict([[float(power)]]) # Predict if a particular sample is an outlier or not (anomaly or normal)
+
+                          if Voltage_anomaly_score == -1: 
+                              #Voltage_anomaly_score[0] = -1
+                              PC_status = 'Anomaly' # if the Voltage_anomaly_score is equal to -1 then this is a Anamaly
+
+                          else:
+                              Voltage_anomaly_score[0] = 0 # assign this to zero to easily detect the anomaly from android
+                              PC_status = 'Normal' # if the Voltage_anomaly_score is equal to 1 then this is a Normal Data
+
+                          # queries for inserting values
+                          insertPC = "INSERT INTO pc_table(rpi_id, sensor, sname, datetime, date, time, power_consumption, power_consumption_score, power_consumption_anomaly_score, status) VALUES({}, '{}', '{}', '{}', '{}', '{}', {}, {}, {}, '{}');".format(self.RPIrecords[0], data[i][0], self.saveRpiRecords[i+4], dateToday, dateNow, TimeNow, float(power), float(Voltage_score[0]), int(Voltage_anomaly_score[0]), PC_status)
+
+                          #executing the quires
+                          cursor.execute(insertPC)
+                          connection.commit()
+                          #print(data[i][0])
+                          #print(data)
+                          #print(TimeNow)
+                          #print(float(data[i][2]), float(data[i][4]),float(power))
+                else:
+                  self.firstVal += 1
+                data.clear()
+                
+    def stopStartFuction(self):
+        if (self.start == True):
+            self.button.setText("Start")
+            self.start = False # pause the timer
+            #self.timer.stop()
+        else:
+            self.button.setText("Stop")
+            self.start = True # start the timer
+            #self.timer.start(1000)
+  
+if __name__ == "__main__":
+    
+    app = QApplication(sys.argv)
+    #app.setStyleSheet(stylesheet)
+    ex = MainWindow()
+    ex.show()
+    
+    sys.exit(app.exec_())
